@@ -154,7 +154,7 @@ jobs:
             exit 1
           fi
 
-          echo "Access token generated successfully."
+          echo "Access token generated successfully - $ACCESS_TOKEN"
 
           ##################################################
           # Fetch latest version from Exchange
