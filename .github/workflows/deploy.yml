@@ -51,7 +51,7 @@ jobs:
         run: |
           repo="${{ vars.APPLICATION_NAME }}"
           env_name="${{ env.MULE_ENV }}"
-          app_name="${repo}-$(echo "$env_name" | tr '[:upper:]' '[:lower:]')"
+          app_name="${repo}"
 
           echo "repo=${repo}" >> "$GITHUB_OUTPUT"
           echo "env=${env_name}" >> "$GITHUB_OUTPUT"
