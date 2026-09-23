@@ -1,0 +1,295 @@
+name: DEV - MuleSoft App - Publish & Deploy
+
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'exchange-docs/**'
+      - 'pom.xml'
+      - 'mule-artifact.json'
+      - '.github/workflows/dev-publish-deploy.yml'
+
+jobs:
+  deploy:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+
+    env:
+      ENV_NAME: dev
+      VCORES: "1"
+      REPLICAS: "1"
+      TARGET: Cloudhub-US-East-1
+      CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+      CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+
+    steps:
+      ########################################################
+      # Checkout
+      ########################################################
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      ########################################################
+      # Setup Java
+      ########################################################
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+
+      ########################################################
+      # Install XML / JSON Tools
+      ########################################################
+      - name: Install XML Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xmlstarlet \
+            libxml2-utils \
+            jq
+
+      ########################################################
+      # Cache Maven
+      ########################################################
+      - name: Cache Maven Repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('pom.xml') }}
+
+      ########################################################
+      # Detect Changed Mule Application
+      ########################################################
+      - name: Detect changed Mule application
+        id: changes
+        run: |
+          echo "Current commit:"
+          git rev-parse HEAD
+
+          echo "Changed files:"
+
+          # Handle the first commit safely; otherwise compare with HEAD~1.
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+          else
+            CHANGED_FILES=$(git show --pretty='' --name-only HEAD)
+          fi
+
+          echo "$CHANGED_FILES"
+
+          if echo "$CHANGED_FILES" | grep -E '^(src/|exchange-docs/|pom.xml$|mule-artifact.json$|\.github/workflows/dev-publish-deploy.yml$)' > /dev/null; then
+            echo "application_changed=true" >> "$GITHUB_OUTPUT"
+            echo "Mule application change detected."
+          else
+            echo "application_changed=false" >> "$GITHUB_OUTPUT"
+            echo "No Mule application change detected."
+          fi
+
+      ########################################################
+      # No Changes Check
+      ########################################################
+      - name: No changes check
+        if: steps.changes.outputs.application_changed != 'true'
+        run: |
+          echo "No Mule application changes detected."
+
+      ########################################################
+      # Generate Deployable POM
+      ########################################################
+      - name: Generate deployable pom
+        if: steps.changes.outputs.application_changed == 'true'
+        run: |
+          echo "======================================"
+          echo "Preparing Mule application"
+          echo "======================================"
+
+          ##################################################
+          # Copy POM
+          ##################################################
+          cp pom.xml generated-pom.xml
+
+          ##################################################
+          # Read current version
+          ##################################################
+          CURRENT_VERSION=$(xmllint \
+            --xpath "//*[local-name()='project']/*[local-name()='version']/text()" \
+            pom.xml)
+
+          echo "Current Version: $CURRENT_VERSION"
+
+          ##################################################
+          # Read artifactId
+          ##################################################
+          NEW_ASSET_ID=$(xmllint \
+            --xpath "//*[local-name()='project']/*[local-name()='artifactId']/text()" \
+            pom.xml)
+
+          echo "Asset ID: $NEW_ASSET_ID"
+
+          ##################################################
+          # Generate Anypoint Access Token
+          ##################################################
+          echo "Generating Anypoint access token..."
+
+          TOKEN_RESPONSE=$(curl -sS \
+            -X POST \
+            "https://anypoint.mulesoft.com/accounts/api/v2/oauth2/token" \
+            -H "Content-Type: application/json" \
+            -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"${CONNECTED_APP_CLIENT_ID}\",\"client_secret\":\"${CONNECTED_APP_CLIENT_SECRET}\"}")
+
+          ACCESS_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.access_token // empty')
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ERROR: Unable to generate Anypoint access token."
+            echo "Token response:"
+            echo "$TOKEN_RESPONSE"
+            exit 1
+          fi
+
+          echo "Access token generated successfully."
+
+          ##################################################
+          # Fetch latest version from Exchange
+          ##################################################
+          echo "Fetching latest version from Exchange..."
+          echo "Asset ID: $NEW_ASSET_ID"
+
+          RESPONSE=$(curl -sS \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://anypoint.mulesoft.com/exchange/api/v2/assets/${{ secrets.AURIS_BUSINESS_GROUP_ID }}/$NEW_ASSET_ID")
+
+          echo "Exchange Response:"
+          echo "$RESPONSE"
+
+          ##################################################
+          # Extract latest version
+          ##################################################
+          LATEST_VERSION=$(echo "$RESPONSE" | jq -r '.version // empty')
+
+          echo "Latest Exchange Version: $LATEST_VERSION"
+
+          ##################################################
+          # Generate next semantic version
+          ##################################################
+          if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
+            NEW_VERSION="1.0.1"
+          else
+            CLEAN_VERSION=$(echo "$LATEST_VERSION" | sed 's/-.*//')
+
+            MAJOR=$(echo "$CLEAN_VERSION" | awk -F. '{print $1}')
+            MINOR=$(echo "$CLEAN_VERSION" | awk -F. '{print $2}')
+            PATCH=$(echo "$CLEAN_VERSION" | awk -F. '{print $3}')
+
+            if [ -z "$MAJOR" ]; then MAJOR=1; fi
+            if [ -z "$MINOR" ]; then MINOR=0; fi
+            if [ -z "$PATCH" ]; then PATCH=0; fi
+
+            NEXT_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+          fi
+
+          echo "New Version: $NEW_VERSION"
+
+          ##################################################
+          # Update app.artifactId
+          ##################################################
+          xmlstarlet ed -L \
+            -N x="http://maven.apache.org/POM/4.0.0" \
+            -u "/x:project/x:properties/x:app.artifactId" \
+            -v "$NEW_ASSET_ID" \
+            generated-pom.xml
+
+          ##################################################
+          # Update project version
+          ##################################################
+          xmlstarlet ed -L \
+            -N x="http://maven.apache.org/POM/4.0.0" \
+            -u "/x:project/x:version" \
+            -v "$NEW_VERSION" \
+            generated-pom.xml
+
+          ##################################################
+          # Display updated values
+          ##################################################
+          echo "======================================"
+          echo "Updated POM Values"
+          echo "======================================"
+          echo "Asset ID : $NEW_ASSET_ID"
+          echo "Version  : $NEW_VERSION"
+
+      ########################################################
+      # Build Mule Application
+      ########################################################
+      - name: Build Mule application
+        if: steps.changes.outputs.application_changed == 'true'
+        run: |
+          echo "======================================"
+          echo "Building Mule application"
+          echo "======================================"
+
+          mvn clean install \
+            -f generated-pom.xml \
+            --settings .maven/settings.xml \
+            -DskipMunitTests \
+            -Denv=dev
+
+      ########################################################
+      # Publish Application To Exchange
+      ########################################################
+      - name: Publish application
+        if: steps.changes.outputs.application_changed == 'true'
+        run: |
+          echo "======================================"
+          echo "Publishing Mule application to Exchange"
+          echo "======================================"
+
+          mvn clean deploy \
+            -f generated-pom.xml \
+            --settings .maven/settings.xml \
+            -DskipMunitTests \
+            -Denv=dev \
+            -Dclient.id="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            -Dclient.secret="${{ secrets.ANYPOINT_CLIENT_SECRET }}"
+
+      ########################################################
+      # Deploy Application To CloudHub
+      ########################################################
+      - name: Deploy application
+        if: steps.changes.outputs.application_changed == 'true'
+        run: |
+          API_NAME=$(xmllint \
+            --xpath "//*[local-name()='project']/*[local-name()='artifactId']/text()" \
+            pom.xml)
+
+          echo "======================================"
+          echo "CloudHub Deployment"
+          echo "======================================"
+          echo "API         : $API_NAME"
+          echo "Environment : $ENV_NAME"
+          echo "vCores      : $VCORES"
+          echo "Replicas    : $REPLICAS"
+          echo "Target      : $TARGET"
+
+          mvn mule:deploy \
+            -f generated-pom.xml \
+            --settings .maven/settings.xml \
+            -DskipMunitTests \
+            -Denv=dev \
+            -Dvcores="$VCORES" \
+            -Dreplicas="$REPLICAS" \
+            -Dtarget="$TARGET" \
+            -Denvironment="Sandbox" \
+            -Dbusiness.group="" \
+            -Dclient.id="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            -Dclient.secret="${{ secrets.ANYPOINT_CLIENT_SECRET }}"
+
+          echo ""
+          echo "Deployment completed for $API_NAME"
