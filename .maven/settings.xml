@@ -1,78 +1,104 @@
-<?xml version="1.0"?>
-<settings>
-<pluginGroups>
-    <pluginGroup>org.mule.tools</pluginGroup>
-</pluginGroups>
+<?xml version="1.0" encoding="UTF-8"?>
 
-  <servers>
-    <!-- connected app's required scopes: https://help.salesforce.com/s/articleView?id=001119708&type=1 -->
-    <server>
-      <id>Repository</id> <!-- make sure this matches the serverId property in pom.xml -->
-      <username>~~Client~~</username>
-      <password>${env.CONNECTED_APP_CLIENT_ID}~?~${env.CONNECTED_APP_CLIENT_SECRET}</password> <!-- these come from the build.yml and your github secrets -->
-    </server>
-<server>
-      <id>anypoint-exchange-v3</id> <!-- make sure this matches the serverId property in pom.xml -->
-      <username>~~Client~~</username>
-      <password>${env.CONNECTED_APP_CLIENT_ID}~?~${env.CONNECTED_APP_CLIENT_SECRET}</password> <!-- these come from the build.yml and your github secrets -->
-    </server>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="
+            http://maven.apache.org/SETTINGS/1.0.0
+            https://maven.apache.org/xsd/settings-1.0.0.xsd">
 
-  </servers>
+    <pluginGroups>
+        <pluginGroup>org.mule.tools</pluginGroup>
+    </pluginGroups>
 
-<profiles>
+    <servers>
 
-    <profile>
+        <!--
+            Must match:
+            <distributionManagement>
+                <repository>
+                    <id>anypoint-exchange-v3</id>
+        -->
 
-        <id>mulesoft</id>
+        <server>
+            <id>anypoint-exchange-v3</id>
+            <username>~~Client~~</username>
+            <password>${env.CONNECTED_APP_CLIENT_ID}~?~${env.CONNECTED_APP_CLIENT_SECRET}</password>
+        </server>
 
-        <repositories>
+    </servers>
 
-            <repository>
-                <id>mulesoft-releases</id>
-                <name>MuleSoft Releases</name>
-                <url>https://repository.mulesoft.org/releases/</url>
-                <releases>
-                    <enabled>true</enabled>
-                </releases>
-                <snapshots>
-                    <enabled>false</enabled>
-                </snapshots>
-            </repository>
 
-            <repository>
-                <id>anypoint-exchange-v3</id>
-                <name>Anypoint Exchange</name>
-                <url>https://maven.anypoint.mulesoft.com/api/v3/maven</url>
-                <releases>
-                    <enabled>true</enabled>
-                </releases>
-            </repository>
+    <profiles>
 
-        </repositories>
+        <profile>
 
-        <pluginRepositories>
+            <id>mulesoft</id>
 
-            <pluginRepository>
-                <id>mulesoft-releases</id>
-                <name>MuleSoft Releases</name>
-                <url>https://repository.mulesoft.org/releases/</url>
-                <releases>
-                    <enabled>true</enabled>
-                </releases>
-                <snapshots>
-                    <enabled>false</enabled>
-                </snapshots>
-            </pluginRepository>
+            <repositories>
 
-        </pluginRepositories>
+                <!-- MuleSoft Releases -->
+                <repository>
+                    <id>mulesoft-releases</id>
+                    <name>MuleSoft Releases</name>
+                    <url>https://repository.mulesoft.org/releases/</url>
 
-    </profile>
+                    <releases>
+                        <enabled>true</enabled>
+                    </releases>
 
-</profiles>
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
 
-<activeProfiles>
-    <activeProfile>mulesoft</activeProfile>
-</activeProfiles>
+                </repository>
 
+
+                <!-- Anypoint Exchange -->
+                <repository>
+                    <id>anypoint-exchange-v3</id>
+                    <name>Anypoint Exchange</name>
+                    <url>https://maven.anypoint.mulesoft.com/api/v3/maven</url>
+
+                    <releases>
+                        <enabled>true</enabled>
+                    </releases>
+
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+
+                </repository>
+
+            </repositories>
+
+
+            <pluginRepositories>
+
+                <pluginRepository>
+
+                    <id>mulesoft-releases</id>
+                    <name>MuleSoft Releases</name>
+                    <url>https://repository.mulesoft.org/releases/</url>
+
+                    <releases>
+                        <enabled>true</enabled>
+                    </releases>
+
+                    <snapshots>
+                        <enabled>false</enabled>
+                    </snapshots>
+
+                </pluginRepository>
+
+            </pluginRepositories>
+
+        </profile>
+
+    </profiles>
+
+
+    <activeProfiles>
+        <activeProfile>mulesoft</activeProfile>
+    </activeProfiles>
 
 </settings>
