@@ -12,7 +12,7 @@
     <!-- ===================================================== -->
 
     <groupId>82be2672-4c76-4656-9117-d551d04b48c8</groupId>
-    <artifactId>mulesoft-cicd-poc1</artifactId>
+    <artifactId>mulesoft-cicd-poc</artifactId>
     <version>1.0.1</version>
     <packaging>mule-application</packaging>
 
