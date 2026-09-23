@@ -7,7 +7,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.mycompany</groupId>
-    <artifactId>mulesoft-cicd-poc</artifactId>
+    <artifactId>mulesoft-cicd-poc1</artifactId>
     <version>1.0.1</version>
     <packaging>mule-application</packaging>
 
