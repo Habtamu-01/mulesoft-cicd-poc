@@ -85,7 +85,7 @@ jobs:
 
           echo "$CHANGED_FILES"
 
-          if echo "$CHANGED_FILES" | grep -E '^(src/|exchange-docs/|pom.xml$|mule-artifact.json$|\.github/workflows/dev-publish-deploy.yml$)' > /dev/null; then
+          if echo "$CHANGED_FILES" | grep -E '^(src/|exchange-docs/|pom.xml$|mule-artifact.json$|\\.github/workflows/dev-publish-deploy.yml$)' > /dev/null; then
             echo "application_changed=true" >> "$GITHUB_OUTPUT"
             echo "Mule application change detected."
           else
@@ -255,9 +255,10 @@ jobs:
             -f generated-pom.xml \
             --settings .maven/settings.xml \
             -DskipMunitTests \
-            -Denv=dev \
-            -Danypoint.clientId="${{ secrets.ANYPOINT_CLIENT_ID }}" \
-            -Danypoint.clientSecret="${{ secrets.ANYPOINT_CLIENT_SECRET }}"
+            -Denv=dev
+        env:
+          CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+          CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
 
       ########################################################
       # Deploy Application To CloudHub
