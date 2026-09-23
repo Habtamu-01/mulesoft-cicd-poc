@@ -1,0 +1,115 @@
+name: Build and Publish Mule Application
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Git commit SHA to build and publish to Exchange (e.g. a3f9c12)'
+        required: true
+        type: string
+
+  # push trigger disabled — build is manually controlled via workflow_dispatch.
+  # re-enable the block below to auto-trigger builds on push.
+  # push:
+  #   branches:
+  #     - feature/**
+  #     - develop
+  #     - main
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    env:
+      # required for exchange-mule-maven-plugin to work with Java 17
+      MAVEN_OPTS: "--add-opens java.base/sun.net.www.protocol.https=ALL-UNNAMED"
+
+    steps:
+      - name: Start with Clean Workspace
+        run: |
+          rm -rf "${GITHUB_WORKSPACE:?}"/*
+          rm -rf "${GITHUB_WORKSPACE:?}"/.[!.]*
+        shell: bash
+
+      - name: Checkout commit ${{ inputs.commit_sha }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+
+      - name: Confirm checked-out commit
+        run: |
+          echo "Building commit : $(git rev-parse HEAD)"
+          git log -1 --oneline
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ vars.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Build Mule application
+        run: mvn clean package -DskipTests
+
+      - name: Stage artifact
+        run: |
+          rm -rf application
+          mkdir -p application
+          appjar=$(ls target/*.jar | head -n 1 | xargs -n 1 basename)
+          cp "target/${appjar}" "application/${appjar}"
+          echo "APPLICATION_JAR=${appjar}" >> "$GITHUB_ENV"
+          echo "Staged: application/${appjar}"
+
+      - name: Install Anypoint CLI
+        run: npm install -g anypoint-cli-v4
+
+      - name: Resolve next Exchange version
+        id: version
+        run: |
+          APP_ID="${{ vars.APPLICATION_NAME }}"
+
+          latest=$(anypoint-cli-v4 exchange:asset:list \
+            --client_id="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            --client_secret="${{ secrets.ANYPOINT_CLIENT_SECRET }}" \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            --output json 2>/dev/null | \
+            jq -r --arg id "$APP_ID" '.[] | select(.assetId == $id) | .version' | \
+            sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+
+          if [ -z "$latest" ]; then
+            new_version="1.0.0"
+          else
+            IFS='.' read -r major minor patch <<< "$latest"
+            new_version="${major}.${minor}.$((patch + 1))"
+          fi
+
+          echo "Latest Exchange version : ${latest:-none}"
+          echo "New version             : ${new_version}"
+          echo "ASSET_VERSION=${new_version}" >> "$GITHUB_ENV"
+          echo "asset_version=${new_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to Anypoint Exchange
+        run: |
+          anypoint-cli-v4 exchange:asset:upload \
+            --name="${{ vars.APPLICATION_NAME }}" \
+            --type="app" \
+            --status="published" \
+            --files="{\"mule-application.jar\":\"application/${{ env.APPLICATION_JAR }}\"}" \
+            --client_id="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            --client_secret="${{ secrets.ANYPOINT_CLIENT_SECRET }}" \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            "${{ vars.APPLICATION_NAME }}/${{ env.ASSET_VERSION }}"
+
+      - name: Summary
+        run: |
+          echo "========================================"
+          echo "Published to Exchange successfully"
+          echo "Asset   : ${{ vars.APPLICATION_NAME }}"
+          echo "Version : ${{ env.ASSET_VERSION }}"
+          echo "Commit  : $(git rev-parse HEAD)"
+          echo "Use this version when triggering deploy"
+          echo "========================================"
