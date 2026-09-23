@@ -1,0 +1,112 @@
+name: Deploy to DEV
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: string
+        description: 'Define environment name'
+        required: true
+        default: 'dev'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    environment: ${{ github.event.inputs.environment }}
+
+    env:
+      MULE_ENV: ${{ github.event.inputs.environment }}
+      ANYPOINT_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+      ANYPOINT_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+      MAVEN_OPTS: "--add-opens java.base/sun.net.www.protocol.https=ALL-UNNAMED"
+
+    steps:
+      - name: Start with Clean Workspace
+        run: |
+          rm -rf "${GITHUB_WORKSPACE:?}"/*
+          rm -rf "${GITHUB_WORKSPACE:?}"/.[!.]*
+        shell: bash
+
+      - name: Checkout main repo
+        uses: actions/checkout@v4
+
+      - name: Output Inputs
+        run: echo '${{ toJSON(github.event.inputs) }}'
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ vars.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Prepare deployment variables
+        id: vars
+        run: |
+          repo="${{ vars.APPLICATION_NAME }}"
+          env_name="${{ env.MULE_ENV }}"
+          app_name="${repo}-${env_name}"
+
+          echo "repo=${repo}" >> "$GITHUB_OUTPUT"
+          echo "env=${env_name}" >> "$GITHUB_OUTPUT"
+          echo "app_name=${app_name}" >> "$GITHUB_OUTPUT"
+
+          echo "Application name: ${app_name}"
+          echo "Environment: ${env_name}"
+          echo "Deployment target: ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime version: ${{ vars.RUNTIME }}"
+
+      - name: Configure Maven for Exchange
+        run: |
+          mkdir -p ~/.m2
+
+          cat > ~/.m2/settings.xml <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>anypoint-exchange-v3</id>
+                <username>${{ secrets.ANYPOINT_CLIENT_ID }}</username>
+                <password>${{ secrets.ANYPOINT_CLIENT_SECRET }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Deploy to CloudHub 2.0
+        run: |
+          set -e
+
+          APP_NAME="${{ steps.vars.outputs.app_name }}"
+          ENV_NAME="${{ steps.vars.outputs.env }}"
+
+          echo "Application name: $APP_NAME"
+          echo "Environment: $ENV_NAME"
+          echo "Deployment target: ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime version: ${{ vars.RUNTIME }}"
+
+          mvn clean package mule:deploy -DskipTests -DmuleDeploy \
+            -Dapp.name="$APP_NAME" \
+            -Denvironment="$ENV_NAME" \
+            -DtargetName="${{ vars.DEPLOYMENT_TARGET }}" \
+            -DmuleVersion="${{ vars.RUNTIME }}" \
+            -Dreplicas="${{ vars.WORKERS }}" \
+            -DvCores="${{ vars.WORKERSIZE }}" \
+            -Danypoint.clientId="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            -Danypoint.clientSecret="${{ secrets.ANYPOINT_CLIENT_SECRET }}" \
+            -Dmule.env="$ENV_NAME"
+
+      - name: Deployment Summary
+        run: |
+          echo "========================================"
+          echo "CloudHub 2.0 deployment completed"
+          echo "Application : ${{ steps.vars.outputs.app_name }}"
+          echo "Environment : ${{ steps.vars.outputs.env }}"
+          echo "Target      : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime     : ${{ vars.RUNTIME }}"
+          echo "========================================"
