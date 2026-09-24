@@ -14,9 +14,6 @@
 
     <name>mulesoft-cicd-poc</name>
 
-
- 
-
     <properties>
 
         <project.build.sourceEncoding>
@@ -211,10 +208,6 @@
 
     </dependencies>
 
-
-    <!-- ===================================================== -->
-    <!-- Maven Repositories                                    -->
-    <!-- ===================================================== -->
 
     <repositories>
 
