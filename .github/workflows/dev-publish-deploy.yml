@@ -164,7 +164,7 @@ jobs:
 
           RESPONSE=$(curl -sS \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
-            "https://anypoint.mulesoft.com/exchange/api/v2/assets/${{ secrets.AURIS_BUSINESS_GROUP_ID }}/$NEW_ASSET_ID")
+            "https://anypoint.mulesoft.com/exchange/api/v2/assets/${{ secrets.ANYPOINT_ORG }}/$NEW_ASSET_ID")
 
           echo "Exchange Response:"
           echo "$RESPONSE"
@@ -252,6 +252,7 @@ jobs:
           echo "======================================"
 
           mvn deploy \
+             -e \
             -f generated-pom.xml \
             --settings .maven/settings.xml \
             -DskipMunitTests \
