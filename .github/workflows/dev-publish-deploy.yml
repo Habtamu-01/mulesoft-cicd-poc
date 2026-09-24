@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      ENV_NAME: dev
+      ENV_NAME: Sandbox
       VCORES: "1"
       REPLICAS: "1"
       TARGET: Cloudhub-US-East-1
