@@ -56,9 +56,7 @@ jobs:
             libxml2-utils \
             jq
 
-      ########################################################
-      # Cache Maven
-      ########################################################
+ 
       - name: Cache Maven Repository
         uses: actions/cache@v4
         with:
