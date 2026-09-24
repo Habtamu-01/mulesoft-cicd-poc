@@ -23,7 +23,7 @@ jobs:
       ENV_NAME: Sandbox
       VCORES: "1"
       REPLICAS: "1"
-      TARGET: Cloudhub-US-East-1
+      TARGET: Cloudhub-US-East-2
       CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
       CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
 
