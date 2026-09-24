@@ -90,11 +90,6 @@
                         mule-application
                     </classifier>
 
-
-                    <!-- ========================================= -->
-                    <!-- CloudHub 2.0 Deployment                   -->
-                    <!-- ========================================= -->
-
                     <cloudhub2Deployment>
 
                         <uri>
