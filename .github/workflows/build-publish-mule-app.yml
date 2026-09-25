@@ -24,18 +24,20 @@ jobs:
       CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
 
     steps:
-      ########################################################
-      # Checkout Exact Commit
-      ########################################################
+
+      # =========================================================
+      # 1. CHECKOUT EXACT COMMIT
+      # =========================================================
       - name: Checkout selected commit
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.commit_sha }}
           fetch-depth: 0
 
-      ########################################################
-      # Verify Commit
-      ########################################################
+
+      # =========================================================
+      # 2. VERIFY COMMIT
+      # =========================================================
       - name: Verify selected commit
         shell: bash
         run: |
@@ -44,12 +46,8 @@ jobs:
           REQUESTED_COMMIT="${{ inputs.commit_sha }}"
           ACTUAL_COMMIT="$(git rev-parse HEAD)"
 
-          echo "======================================"
-          echo "BUILD INFORMATION"
-          echo "======================================"
           echo "Requested Commit : $REQUESTED_COMMIT"
           echo "Actual Commit    : $ACTUAL_COMMIT"
-          echo "======================================"
 
           RESOLVED_COMMIT="$(git rev-parse "${REQUESTED_COMMIT}^{commit}")"
 
@@ -60,9 +58,10 @@ jobs:
 
           echo "Commit verified successfully."
 
-      ########################################################
-      # Setup Java
-      ########################################################
+
+      # =========================================================
+      # 3. JAVA / MAVEN SETUP
+      # =========================================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
@@ -70,37 +69,29 @@ jobs:
           java-version: '17'
           cache: maven
 
-      ########################################################
-      # Install Required Tools
-      ########################################################
+
+      # =========================================================
+      # 4. INSTALL REQUIRED UTILITIES
+      # =========================================================
       - name: Install XML / JSON tools
         shell: bash
         run: |
           set -euo pipefail
 
           sudo apt-get update
-          sudo apt-get install -y \
-            xmlstarlet \
-            libxml2-utils \
-            jq
+          sudo apt-get install -y xmlstarlet libxml2-utils jq
 
-      ########################################################
-      # Generate Versioned POM
-      ########################################################
+
+      # =========================================================
+      # 5. GENERATE VERSIONED POM
+      # =========================================================
       - name: Generate versioned POM
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "Preparing Mule application"
-          echo "======================================"
-
           cp pom.xml generated-pom.xml
 
-          ##################################################
-          # Read Current Project Information
-          ##################################################
           CURRENT_VERSION=$(xmllint \
             --xpath "//*[local-name()='project']/*[local-name()='version']/text()" \
             pom.xml)
@@ -112,11 +103,9 @@ jobs:
           echo "Current Version : $CURRENT_VERSION"
           echo "Asset ID        : $ASSET_ID"
 
-          ##################################################
-          # Generate Anypoint Access Token
-          ##################################################
-          echo "Generating Anypoint access token..."
-
+          # -------------------------------------------------------
+          # Generate Anypoint OAuth token
+          # -------------------------------------------------------
           TOKEN_RESPONSE=$(curl --fail-with-body -sS \
             -X POST \
             "https://anypoint.mulesoft.com/accounts/api/v2/oauth2/token" \
@@ -132,11 +121,10 @@ jobs:
 
           echo "Access token generated successfully."
 
-          ##################################################
-          # Fetch Latest Exchange Version
-          ##################################################
-          echo "Fetching latest Exchange version..."
 
+          # -------------------------------------------------------
+          # Get latest published Exchange version
+          # -------------------------------------------------------
           RESPONSE=$(curl --fail-with-body -sS \
             -H "Authorization: Bearer $ACCESS_TOKEN" \
             "https://anypoint.mulesoft.com/exchange/api/v2/assets/${{ secrets.ANYPOINT_ORG }}/$ASSET_ID")
@@ -145,9 +133,12 @@ jobs:
 
           echo "Latest Exchange Version: ${LATEST_VERSION:-none}"
 
-          ##################################################
-          # Generate Next Semantic Version
-          ##################################################
+
+          # -------------------------------------------------------
+          # Generate next patch version
+          # Example:
+          # 1.0.4 -> 1.0.5
+          # -------------------------------------------------------
           if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
 
             NEW_VERSION="1.0.1"
@@ -165,102 +156,151 @@ jobs:
             if [ -z "$PATCH" ]; then PATCH=0; fi
 
             NEXT_PATCH=$((PATCH + 1))
+
             NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
 
           fi
 
           echo "New Exchange Version: $NEW_VERSION"
 
-          ##################################################
-          # Keep app.artifactId Aligned
-          ##################################################
+
+          # -------------------------------------------------------
+          # Update application artifact ID
+          # -------------------------------------------------------
           xmlstarlet ed -L \
             -N x="http://maven.apache.org/POM/4.0.0" \
             -u "/x:project/x:properties/x:app.artifactId" \
             -v "$ASSET_ID" \
             generated-pom.xml
 
-          ##################################################
-          # Set New Project Version
-          ##################################################
+
+          # -------------------------------------------------------
+          # Update Maven project version
+          # -------------------------------------------------------
           xmlstarlet ed -L \
             -N x="http://maven.apache.org/POM/4.0.0" \
             -u "/x:project/x:version" \
             -v "$NEW_VERSION" \
             generated-pom.xml
 
-          ##################################################
-          # Make Values Available To Following Steps
-          ##################################################
+
+          # Make values available to later steps
           echo "ASSET_ID=$ASSET_ID" >> "$GITHUB_ENV"
           echo "ASSET_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
 
-          echo "======================================"
-          echo "VERSION INFORMATION"
-          echo "======================================"
-          echo "Asset ID : $ASSET_ID"
-          echo "Version  : $NEW_VERSION"
-          echo "======================================"
 
-      ########################################################
-      # Build
-      ########################################################
-      - name: Build Mule application
+      # =========================================================
+      # 6. BUILD MULE APPLICATION
+      #
+      # IMPORTANT:
+      # attachMuleSources includes Mule project sources inside
+      # the deployable archive so the packaged application can
+      # be imported back into Anypoint Studio.
+      # =========================================================
+      - name: Build Mule application with project sources
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "======================================"
+          echo "=========================================="
           echo "Building Mule application"
-          echo "======================================"
+          echo "Asset   : $ASSET_ID"
+          echo "Version : $ASSET_VERSION"
+          echo "Attaching Mule project sources"
+          echo "=========================================="
 
           mvn clean install \
             -f generated-pom.xml \
             --settings .maven/settings.xml \
             -DskipMunitTests \
-            -Denv=dev
+            -Denv=dev \
+            -DattachMuleSources
 
-      ########################################################
-      # Publish To Exchange
-      ########################################################
+
+      # =========================================================
+      # 7. VERIFY SOURCES ARE ATTACHED
+      #
+      # This prevents us from publishing a JAR that cannot later
+      # be imported into Studio.
+      # =========================================================
+      - name: Verify Mule sources are attached
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Searching for generated Mule application JAR..."
+
+          JAR_FILE=$(find target \
+            -maxdepth 1 \
+            -type f \
+            -name "*-mule-application.jar" \
+            | head -n 1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: Mule application JAR was not generated."
+            exit 1
+          fi
+
+          echo "Generated JAR: $JAR_FILE"
+
+          echo ""
+          echo "Checking for META-INF/mule-src..."
+          echo ""
+
+          if jar tf "$JAR_FILE" | grep -q '^META-INF/mule-src/'; then
+            echo "SUCCESS: Mule project sources are attached."
+          else
+            echo "ERROR: META-INF/mule-src was not found."
+            echo "The application will NOT be published."
+            exit 1
+          fi
+
+
+      # =========================================================
+      # 8. PUBLISH TO ANYPOINT EXCHANGE
+      # =========================================================
       - name: Publish application to Exchange
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "======================================"
-          echo "Publishing Mule application"
-          echo "======================================"
+          echo "=========================================="
+          echo "Publishing Mule application to Exchange"
           echo "Asset   : $ASSET_ID"
           echo "Version : $ASSET_VERSION"
+          echo "=========================================="
 
           mvn deploy \
             -e \
             -f generated-pom.xml \
             --settings .maven/settings.xml \
             -DskipMunitTests \
-            -Denv=dev
+            -Denv=dev \
+            -DattachMuleSources
 
-      ########################################################
-      # Summary
-      ########################################################
+
+      # =========================================================
+      # 9. BUILD / PUBLISH SUMMARY
+      # =========================================================
       - name: Build and Publish Summary
         shell: bash
         run: |
-          echo "======================================"
-          echo "BUILD & PUBLISH SUCCESSFUL"
-          echo "======================================"
           echo "Asset   : $ASSET_ID"
           echo "Version : $ASSET_VERSION"
           echo "Commit  : $(git rev-parse HEAD)"
-          echo "======================================"
 
           echo "### MuleSoft Build & Publish" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
           echo "| Asset | $ASSET_ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Exchange Version | $ASSET_VERSION |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Commit | $(git rev-parse HEAD) |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Mule Sources Attached | Yes |" >> "$GITHUB_STEP_SUMMARY"
+
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Deploy this Exchange version:** \`$ASSET_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+
+          echo "**Deploy this Exchange version:** \`$ASSET_VERSION\`" \
+            >> "$GITHUB_STEP_SUMMARY"
