@@ -1,0 +1,210 @@
+name: MuleSoft - Deploy
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Anypoint environment'
+        required: true
+        type: choice
+        options:
+          - Sandbox
+          - dev
+          - test1
+          - test2
+          - training
+          - Staging
+          - prod
+
+      asset_version:
+        description: 'Published Exchange version to deploy (example: 1.0.8)'
+        required: true
+        type: string
+
+concurrency:
+  group: mulesoft-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Enables GitHub Environment protection/approvals
+    # when environments with these exact names exist.
+    environment: ${{ inputs.environment }}
+
+    env:
+      ENV_NAME: ${{ inputs.environment }}
+
+      VCORES: "1"
+      REPLICAS: "1"
+
+      TARGET: Cloudhub-US-East-2
+
+      CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+      CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+
+    steps:
+      ########################################################
+      # Checkout
+      ########################################################
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      ########################################################
+      # Setup Java
+      ########################################################
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          cache: maven
+
+      ########################################################
+      # Install Required Tools
+      ########################################################
+      - name: Install XML / JSON tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            xmlstarlet \
+            libxml2-utils \
+            jq
+
+      ########################################################
+      # Validate Input
+      ########################################################
+      - name: Validate deployment input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ inputs.asset_version }}"
+
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$'; then
+            echo "ERROR: Invalid asset version: $VERSION"
+            echo "Expected format similar to: 1.0.8"
+            exit 1
+          fi
+
+          echo "Deployment version validated: $VERSION"
+
+      ########################################################
+      # Prepare Deployment POM
+      ########################################################
+      - name: Prepare deployment POM
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "Preparing Mule deployment"
+          echo "======================================"
+
+          cp pom.xml generated-pom.xml
+
+          ##################################################
+          # Read Artifact ID
+          ##################################################
+          API_NAME=$(xmllint \
+            --xpath "//*[local-name()='project']/*[local-name()='artifactId']/text()" \
+            pom.xml)
+
+          echo "API_NAME=$API_NAME" >> "$GITHUB_ENV"
+
+          ##################################################
+          # Keep app.artifactId Aligned
+          ##################################################
+          xmlstarlet ed -L \
+            -N x="http://maven.apache.org/POM/4.0.0" \
+            -u "/x:project/x:properties/x:app.artifactId" \
+            -v "$API_NAME" \
+            generated-pom.xml
+
+          ##################################################
+          # Set Exact Published Exchange Version
+          ##################################################
+          xmlstarlet ed -L \
+            -N x="http://maven.apache.org/POM/4.0.0" \
+            -u "/x:project/x:version" \
+            -v "${{ inputs.asset_version }}" \
+            generated-pom.xml
+
+          echo "======================================"
+          echo "DEPLOYMENT INFORMATION"
+          echo "======================================"
+          echo "Application : $API_NAME"
+          echo "Version     : ${{ inputs.asset_version }}"
+          echo "Environment : $ENV_NAME"
+          echo "Target      : $TARGET"
+          echo "vCores      : $VCORES"
+          echo "Replicas    : $REPLICAS"
+          echo "======================================"
+
+      ########################################################
+      # Deploy Exact Exchange Version
+      ########################################################
+      - name: Deploy application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "CloudHub Deployment"
+          echo "======================================"
+
+          echo "API         : $API_NAME"
+          echo "Version     : ${{ inputs.asset_version }}"
+          echo "Environment : $ENV_NAME"
+          echo "vCores      : $VCORES"
+          echo "Replicas    : $REPLICAS"
+          echo "Target      : $TARGET"
+
+          mvn mule:deploy \
+            -f generated-pom.xml \
+            --settings .maven/settings.xml \
+            -DskipMunitTests \
+            -Denv=dev \
+            -DvCores="$VCORES" \
+            -Dreplicas="$REPLICAS" \
+            -DtargetName="$TARGET" \
+            -Denvironment="$ENV_NAME" \
+            -Danypoint.clientId="${{ secrets.ANYPOINT_CLIENT_ID }}" \
+            -Danypoint.clientSecret="${{ secrets.ANYPOINT_CLIENT_SECRET }}"
+
+          echo ""
+          echo "Deployment completed for $API_NAME"
+
+      ########################################################
+      # Summary
+      ########################################################
+      - name: Deployment Summary
+        if: success()
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "DEPLOYMENT SUCCESSFUL"
+          echo "======================================"
+          echo "Application : $API_NAME"
+          echo "Version     : ${{ inputs.asset_version }}"
+          echo "Environment : $ENV_NAME"
+          echo "Target      : $TARGET"
+          echo "======================================"
+
+          echo "### MuleSoft Deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Application | $API_NAME |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Exchange Version | ${{ inputs.asset_version }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Environment | $ENV_NAME |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target | $TARGET |" >> "$GITHUB_STEP_SUMMARY"
