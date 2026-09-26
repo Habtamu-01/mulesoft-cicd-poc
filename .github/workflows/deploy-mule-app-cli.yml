@@ -165,11 +165,8 @@ jobs:
       # =========================================================
       # 6. VERIFY EXCHANGE ASSET VERSION
       #
-      # Make sure the version produced by:
-      #
-      # MuleSoft CLI - Build & Publish
-      #
-      # actually exists before attempting deployment.
+      # Make sure the requested Exchange version actually exists
+      # before attempting deployment.
       # =========================================================
       - name: Verify Exchange asset version
         shell: bash
@@ -221,10 +218,9 @@ jobs:
 
 
       # =========================================================
-      # 7. CHECK APPLICATIONS IN CLOUDHUB
+      # 7. CHECK IF APPLICATION ALREADY EXISTS
       #
-      # The CLI returns application information.
-      # If the application already exists, capture its ID.
+      # If it exists, capture its CloudHub application ID.
       # =========================================================
       - name: Check if application exists in CloudHub
         id: check
@@ -267,7 +263,7 @@ jobs:
             echo ""
             echo "Application already exists."
             echo "Application Name : $EXISTING_NAME"
-            echo "Application ID   : ${EXISTING_ID:-not-returned}"
+            echo "Application ID   : $EXISTING_ID"
 
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "application_id=$EXISTING_ID" >> "$GITHUB_OUTPUT"
@@ -285,11 +281,7 @@ jobs:
       # =========================================================
       # 8. DEPLOY NEW APPLICATION
       #
-      # This runs ONLY if the application does not already exist.
-      #
-      # The selected Exchange version is passed explicitly using:
-      #
-      # --assetVersion
+      # Runs ONLY when the application does not already exist.
       # =========================================================
       - name: Deploy new application using Anypoint CLI
         if: steps.check.outputs.exists == 'false'
@@ -325,58 +317,75 @@ jobs:
             --property="mule.env:dev"
 
           echo ""
-          echo "CLI deployment command completed."
+          echo "New application deployment command completed."
 
 
       # =========================================================
-      # 9. EXISTING APPLICATION SAFETY CHECK
+      # 9. UPDATE EXISTING APPLICATION
       #
-      # For the FIRST CLI test we intentionally do NOT modify
-      # an existing working application.
+      # Runs ONLY when the application already exists.
       #
-      # Instead, display the installed CLI's modify syntax.
+      # Uses the actual CloudHub application ID returned by:
+      #
+      # runtime-mgr:application:list
+      #
+      # and deploys the requested Exchange version.
       # =========================================================
-      - name: Existing application - inspect modify command
+      - name: Update existing application using Anypoint CLI
         if: steps.check.outputs.exists == 'true'
         shell: bash
         run: |
           set -euo pipefail
 
+          APP_ID="${{ steps.check.outputs.application_id }}"
+
+          if [ -z "$APP_ID" ]; then
+
+            echo "ERROR: Existing application ID was not returned."
+
+            exit 1
+
+          fi
+
           echo "=========================================="
-          echo "EXISTING APPLICATION DETECTED"
+          echo "Updating EXISTING CloudHub application"
           echo "=========================================="
 
           echo "Application    : $APP_NAME"
-          echo "Application ID : ${{ steps.check.outputs.application_id }}"
+          echo "Application ID : $APP_ID"
+          echo "Version        : ${{ inputs.asset_version }}"
           echo "Environment    : $ENV_NAME"
+          echo "Runtime        : ${{ vars.RUNTIME }}"
+          echo "Replicas       : ${{ vars.WORKERS }}"
+          echo "Replica Size   : ${{ vars.WORKERSIZE }}"
+
+          anypoint-cli-v4 runtime-mgr:application:modify \
+            "$APP_ID" \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --environment="$ENV_NAME" \
+            --groupId="${{ secrets.ANYPOINT_ORG }}" \
+            --artifactId="$APP_NAME" \
+            --assetVersion="${{ inputs.asset_version }}" \
+            --runtimeVersion="${{ vars.RUNTIME }}" \
+            --replicas="${{ vars.WORKERS }}" \
+            --replicaSize="${{ vars.WORKERSIZE }}" \
+            --property="mule.env:dev"
 
           echo ""
-          echo "For this first CLI test, the existing"
-          echo "application will NOT be modified."
-          echo ""
-
-          echo "Installed Anypoint CLI modify syntax:"
-          echo ""
-
-          anypoint-cli-v4 runtime-mgr:application:modify --help
-
-          echo ""
-          echo "=========================================="
-          echo "DEPLOYMENT STOPPED SAFELY"
-          echo "=========================================="
-
-          echo "No changes were made to the existing application."
-
-          exit 1
+          echo "Existing application update command completed."
 
 
       # =========================================================
-      # 10. VERIFY NEW APPLICATION EXISTS
+      # 10. VERIFY APPLICATION EXISTS AFTER DEPLOYMENT/UPDATE
       #
-      # Runs only after a NEW deployment.
+      # Runs after either:
+      #
+      # NEW    -> application:deploy
+      # EXISTING -> application:modify
       # =========================================================
       - name: Verify CloudHub deployment
-        if: steps.check.outputs.exists == 'false'
         shell: bash
         run: |
           set -euo pipefail
@@ -384,6 +393,9 @@ jobs:
           echo "=========================================="
           echo "Verifying CloudHub deployment"
           echo "=========================================="
+
+          echo "Application : $APP_NAME"
+          echo "Environment : $ENV_NAME"
 
           RESULT=$(anypoint-cli-v4 runtime-mgr:application:list \
             --organization="${{ secrets.ANYPOINT_ORG }}" \
@@ -456,4 +468,7 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Deployment Method | Anypoint CLI v4 |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Existing Before Deployment | ${{ steps.check.outputs.exists }} |" \
             >> "$GITHUB_STEP_SUMMARY"
