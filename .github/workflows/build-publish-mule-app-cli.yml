@@ -11,12 +11,26 @@ on:
         required: true
         type: string
 
+      version_bump:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+
 concurrency:
   group: mulesoft-cli-build-publish
   cancel-in-progress: false
 
+
 jobs:
+
   build-publish-cli:
+
     runs-on: ubuntu-latest
 
     env:
@@ -25,6 +39,7 @@ jobs:
 
       # Required by some Maven/Exchange components with Java 17
       MAVEN_OPTS: "--add-opens java.base/sun.net.www.protocol.https=ALL-UNNAMED"
+
 
     steps:
 
@@ -137,15 +152,23 @@ jobs:
 
       # =========================================================
       # 8. RESOLVE NEXT EXCHANGE VERSION USING ANYPOINT CLI
+      #
+      # Supports:
+      #   patch : 1.0.7 -> 1.0.8
+      #   minor : 1.0.7 -> 1.1.0
+      #   major : 1.0.7 -> 2.0.0
       # =========================================================
       - name: Resolve next Exchange version
         shell: bash
         run: |
           set -euo pipefail
 
+          VERSION_BUMP="${{ inputs.version_bump }}"
+
           echo "=========================================="
           echo "Checking Exchange versions"
-          echo "Application : $APP_ID"
+          echo "Application  : $APP_ID"
+          echo "Version Bump : $VERSION_BUMP"
           echo "=========================================="
 
           EXCHANGE_RESPONSE=$(anypoint-cli-v4 exchange:asset:list \
@@ -163,14 +186,40 @@ jobs:
             tail -1 || true)
 
           if [ -z "$latest" ]; then
+
+            # First version of the application
             new_version="1.0.0"
+
           else
+
             IFS='.' read -r major minor patch <<< "$latest"
-            new_version="${major}.${minor}.$((patch + 1))"
+
+            case "$VERSION_BUMP" in
+
+              patch)
+                new_version="${major}.${minor}.$((patch + 1))"
+                ;;
+
+              minor)
+                new_version="${major}.$((minor + 1)).0"
+                ;;
+
+              major)
+                new_version="$((major + 1)).0.0"
+                ;;
+
+              *)
+                echo "ERROR: Invalid version bump type: $VERSION_BUMP"
+                exit 1
+                ;;
+
+            esac
+
           fi
 
           echo ""
           echo "Latest Exchange Version : ${latest:-none}"
+          echo "Version Bump            : $VERSION_BUMP"
           echo "New Exchange Version    : $new_version"
 
           echo "ASSET_VERSION=$new_version" >> "$GITHUB_ENV"
@@ -331,11 +380,12 @@ jobs:
           echo "=========================================="
           echo "CLI BUILD AND PUBLISH SUCCESSFUL"
           echo "=========================================="
-          echo "Application : $APP_ID"
-          echo "Version     : $ASSET_VERSION"
-          echo "Commit      : $(git rev-parse HEAD)"
-          echo "CLI         : Anypoint CLI v4"
-          echo "Sources     : Attached"
+          echo "Application  : $APP_ID"
+          echo "Version      : $ASSET_VERSION"
+          echo "Version Bump : ${{ inputs.version_bump }}"
+          echo "Commit       : $(git rev-parse HEAD)"
+          echo "CLI          : Anypoint CLI v4"
+          echo "Sources      : Attached"
           echo "=========================================="
 
           echo "### MuleSoft CLI - Build & Publish" \
@@ -354,6 +404,9 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Exchange Version | $ASSET_VERSION |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Version Increment | ${{ inputs.version_bump }} |" \
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Commit | $(git rev-parse HEAD) |" \
