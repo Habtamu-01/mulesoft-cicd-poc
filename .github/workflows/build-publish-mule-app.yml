@@ -19,7 +19,6 @@ on:
         options:
           - patch
           - minor
-          - major
 
 
 concurrency:
@@ -102,7 +101,9 @@ jobs:
       # Supports:
       #   patch : 1.0.7 -> 1.0.8
       #   minor : 1.0.7 -> 1.1.0
-      #   major : 1.0.7 -> 2.0.0
+      #
+      # Major version changes are intentionally handled
+      # outside this automated workflow for now.
       # =========================================================
       - name: Generate versioned POM
         shell: bash
@@ -162,11 +163,13 @@ jobs:
           #
           # patch : 1.0.7 -> 1.0.8
           # minor : 1.0.7 -> 1.1.0
-          # major : 1.0.7 -> 2.0.0
+          #
+          # Major version changes are intentionally handled
+          # outside this automated workflow for now.
           # -------------------------------------------------------
           if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
 
-            # Preserve the existing first-version behavior
+            # Preserve existing first-version behavior
             NEW_VERSION="1.0.1"
 
           else
@@ -192,11 +195,6 @@ jobs:
               minor)
                 NEXT_MINOR=$((MINOR + 1))
                 NEW_VERSION="${MAJOR}.${NEXT_MINOR}.0"
-                ;;
-
-              major)
-                NEXT_MAJOR=$((MAJOR + 1))
-                NEW_VERSION="${NEXT_MAJOR}.0.0"
                 ;;
 
               *)
@@ -247,7 +245,6 @@ jobs:
       # =========================================================
       # 6. BUILD MULE APPLICATION
       #
-      # IMPORTANT:
       # attachMuleSources includes Mule project sources inside
       # the deployable archive so the packaged application can
       # be imported back into Anypoint Studio.
@@ -275,8 +272,8 @@ jobs:
       # =========================================================
       # 7. VERIFY SOURCES ARE ATTACHED
       #
-      # This prevents us from publishing a JAR that cannot later
-      # be imported into Studio.
+      # Prevent publishing a JAR that cannot later
+      # be imported into Anypoint Studio.
       # =========================================================
       - name: Verify Mule sources are attached
         shell: bash
