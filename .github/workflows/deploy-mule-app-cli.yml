@@ -1,0 +1,459 @@
+name: MuleSoft CLI - Deploy
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      environment:
+        description: 'Target Anypoint environment'
+        required: true
+        type: choice
+        options:
+          - Sandbox
+          - dev
+          - test1
+          - test2
+          - training
+          - Staging
+          - prod
+
+      asset_version:
+        description: 'Published Exchange version to deploy (example: 1.0.8)'
+        required: true
+        type: string
+
+
+# =========================================================
+# Prevent two CLI deployments from running against
+# the same environment at the same time
+# =========================================================
+concurrency:
+  group: mulesoft-cli-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+
+jobs:
+
+  deploy-cli:
+
+    runs-on: ubuntu-latest
+
+    # Enables GitHub Environment protection/approval rules
+    environment: ${{ inputs.environment }}
+
+    env:
+
+      ENV_NAME: ${{ inputs.environment }}
+
+      CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+      CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+
+
+    steps:
+
+      # =========================================================
+      # 1. SETUP NODE.JS
+      #
+      # Anypoint CLI v4 is installed through npm
+      # =========================================================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+
+      # =========================================================
+      # 2. INSTALL REQUIRED TOOLS
+      # =========================================================
+      - name: Install required tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+
+      # =========================================================
+      # 3. INSTALL ANYPOINT CLI V4
+      # =========================================================
+      - name: Install Anypoint CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Installing Anypoint CLI v4"
+          echo "=========================================="
+
+          npm install -g anypoint-cli-v4
+
+          echo ""
+          echo "Installed CLI version:"
+
+          anypoint-cli-v4 --version
+
+
+      # =========================================================
+      # 4. VALIDATE DEPLOYMENT INPUT
+      # =========================================================
+      - name: Validate deployment input
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ inputs.asset_version }}"
+
+          echo "Validating Exchange version:"
+          echo "$VERSION"
+
+          if ! echo "$VERSION" | \
+            grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$'; then
+
+            echo ""
+            echo "ERROR: Invalid asset version: $VERSION"
+            echo "Expected format similar to: 1.0.8"
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "Deployment version validated successfully."
+
+
+      # =========================================================
+      # 5. PREPARE DEPLOYMENT VARIABLES
+      # =========================================================
+      - name: Prepare deployment variables
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_NAME="${{ vars.APPLICATION_NAME }}"
+
+          if [ -z "$APP_NAME" ]; then
+
+            echo "ERROR: GitHub variable APPLICATION_NAME is empty."
+
+            exit 1
+
+          fi
+
+          echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
+
+          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "=========================================="
+          echo "CLI DEPLOYMENT INFORMATION"
+          echo "=========================================="
+          echo "Application       : $APP_NAME"
+          echo "Environment       : $ENV_NAME"
+          echo "Exchange Version  : ${{ inputs.asset_version }}"
+          echo "Deployment Target : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime           : ${{ vars.RUNTIME }}"
+          echo "Replicas          : ${{ vars.WORKERS }}"
+          echo "Replica Size      : ${{ vars.WORKERSIZE }}"
+          echo "=========================================="
+
+
+      # =========================================================
+      # 6. VERIFY EXCHANGE ASSET VERSION
+      #
+      # Make sure the version produced by:
+      #
+      # MuleSoft CLI - Build & Publish
+      #
+      # actually exists before attempting deployment.
+      # =========================================================
+      - name: Verify Exchange asset version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_ID="$APP_NAME"
+          VERSION="${{ inputs.asset_version }}"
+
+          echo "=========================================="
+          echo "Checking Exchange"
+          echo "=========================================="
+
+          echo "Application : $APP_ID"
+          echo "Version     : $VERSION"
+
+          EXCHANGE_RESPONSE=$(anypoint-cli-v4 exchange:asset:list \
+            "$APP_ID" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --organizationId="${{ secrets.ANYPOINT_ORG }}" \
+            --output=json)
+
+          FOUND=$(echo "$EXCHANGE_RESPONSE" | \
+            jq -r \
+              --arg id "$APP_ID" \
+              --arg version "$VERSION" \
+              '.[] |
+               select(
+                 .assetId == $id and
+                 .version == $version
+               ) |
+               .version' | \
+            head -n 1)
+
+          if [ "$FOUND" != "$VERSION" ]; then
+
+            echo ""
+            echo "ERROR: Exchange asset version was not found."
+            echo "Application : $APP_ID"
+            echo "Version     : $VERSION"
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "Exchange asset verified successfully."
+
+
+      # =========================================================
+      # 7. CHECK APPLICATIONS IN CLOUDHUB
+      #
+      # The CLI returns application information.
+      # If the application already exists, capture its ID.
+      # =========================================================
+      - name: Check if application exists in CloudHub
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Checking Runtime Manager"
+          echo "=========================================="
+
+          echo "Application : $APP_NAME"
+          echo "Environment : $ENV_NAME"
+
+          RESULT=$(anypoint-cli-v4 runtime-mgr:application:list \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --environment="$ENV_NAME" \
+            --output=json)
+
+          EXISTING_NAME=$(echo "$RESULT" | \
+            jq -r \
+              --arg name "$APP_NAME" \
+              '.[] |
+               select(.name == $name) |
+               .name' | \
+            head -n 1)
+
+          EXISTING_ID=$(echo "$RESULT" | \
+            jq -r \
+              --arg name "$APP_NAME" \
+              '.[] |
+               select(.name == $name) |
+               .id // empty' | \
+            head -n 1)
+
+          if [ -n "$EXISTING_NAME" ]; then
+
+            echo ""
+            echo "Application already exists."
+            echo "Application Name : $EXISTING_NAME"
+            echo "Application ID   : ${EXISTING_ID:-not-returned}"
+
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "application_id=$EXISTING_ID" >> "$GITHUB_OUTPUT"
+
+          else
+
+            echo ""
+            echo "Application does not currently exist."
+
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+
+          fi
+
+
+      # =========================================================
+      # 8. DEPLOY NEW APPLICATION
+      #
+      # This runs ONLY if the application does not already exist.
+      #
+      # The selected Exchange version is passed explicitly using:
+      #
+      # --assetVersion
+      # =========================================================
+      - name: Deploy new application using Anypoint CLI
+        if: steps.check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Deploying NEW CloudHub application"
+          echo "=========================================="
+
+          echo "Application : $APP_NAME"
+          echo "Version     : ${{ inputs.asset_version }}"
+          echo "Environment : $ENV_NAME"
+          echo "Target      : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime     : ${{ vars.RUNTIME }}"
+          echo "Replicas    : ${{ vars.WORKERS }}"
+          echo "ReplicaSize : ${{ vars.WORKERSIZE }}"
+
+          anypoint-cli-v4 runtime-mgr:application:deploy \
+            "$APP_NAME" \
+            "${{ vars.DEPLOYMENT_TARGET }}" \
+            "${{ vars.RUNTIME }}" \
+            "$APP_NAME" \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --environment="$ENV_NAME" \
+            --groupId="${{ secrets.ANYPOINT_ORG }}" \
+            --assetVersion="${{ inputs.asset_version }}" \
+            --replicas="${{ vars.WORKERS }}" \
+            --replicaSize="${{ vars.WORKERSIZE }}" \
+            --property="mule.env:dev"
+
+          echo ""
+          echo "CLI deployment command completed."
+
+
+      # =========================================================
+      # 9. EXISTING APPLICATION SAFETY CHECK
+      #
+      # For the FIRST CLI test we intentionally do NOT modify
+      # an existing working application.
+      #
+      # Instead, display the installed CLI's modify syntax.
+      # =========================================================
+      - name: Existing application - inspect modify command
+        if: steps.check.outputs.exists == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "EXISTING APPLICATION DETECTED"
+          echo "=========================================="
+
+          echo "Application    : $APP_NAME"
+          echo "Application ID : ${{ steps.check.outputs.application_id }}"
+          echo "Environment    : $ENV_NAME"
+
+          echo ""
+          echo "For this first CLI test, the existing"
+          echo "application will NOT be modified."
+          echo ""
+
+          echo "Installed Anypoint CLI modify syntax:"
+          echo ""
+
+          anypoint-cli-v4 runtime-mgr:application:modify --help
+
+          echo ""
+          echo "=========================================="
+          echo "DEPLOYMENT STOPPED SAFELY"
+          echo "=========================================="
+
+          echo "No changes were made to the existing application."
+
+          exit 1
+
+
+      # =========================================================
+      # 10. VERIFY NEW APPLICATION EXISTS
+      #
+      # Runs only after a NEW deployment.
+      # =========================================================
+      - name: Verify CloudHub deployment
+        if: steps.check.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Verifying CloudHub deployment"
+          echo "=========================================="
+
+          RESULT=$(anypoint-cli-v4 runtime-mgr:application:list \
+            --organization="${{ secrets.ANYPOINT_ORG }}" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --environment="$ENV_NAME" \
+            --output=json)
+
+          FOUND=$(echo "$RESULT" | \
+            jq -r \
+              --arg name "$APP_NAME" \
+              '.[] |
+               select(.name == $name) |
+               .name' | \
+            head -n 1)
+
+          if [ "$FOUND" != "$APP_NAME" ]; then
+
+            echo ""
+            echo "ERROR: Application was not found after deployment."
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "Application found in Runtime Manager."
+          echo "Deployment verification successful."
+
+
+      # =========================================================
+      # 11. DEPLOYMENT SUMMARY
+      # =========================================================
+      - name: Deployment Summary
+        if: success()
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "CLI DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+          echo "Application : $APP_NAME"
+          echo "Version     : ${{ inputs.asset_version }}"
+          echo "Environment : $ENV_NAME"
+          echo "Target      : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Method      : Anypoint CLI v4"
+          echo "=========================================="
+
+          echo "### MuleSoft CLI - Deployment" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Property | Value |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "|---|---|" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Application | $APP_NAME |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Exchange Version | ${{ inputs.asset_version }} |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Environment | $ENV_NAME |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Target | ${{ vars.DEPLOYMENT_TARGET }} |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Deployment Method | Anypoint CLI v4 |" \
+            >> "$GITHUB_STEP_SUMMARY"
