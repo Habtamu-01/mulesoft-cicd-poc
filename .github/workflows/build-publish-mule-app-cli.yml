@@ -19,7 +19,6 @@ on:
         options:
           - patch
           - minor
-          - major
 
 
 concurrency:
@@ -156,7 +155,9 @@ jobs:
       # Supports:
       #   patch : 1.0.7 -> 1.0.8
       #   minor : 1.0.7 -> 1.1.0
-      #   major : 1.0.7 -> 2.0.0
+      #
+      # Major version changes are intentionally handled
+      # outside this automated workflow for now.
       # =========================================================
       - name: Resolve next Exchange version
         shell: bash
@@ -185,6 +186,16 @@ jobs:
             sort -t. -k1,1n -k2,2n -k3,3n | \
             tail -1 || true)
 
+
+          # -------------------------------------------------------
+          # Generate next Exchange version
+          #
+          # patch : 1.0.7 -> 1.0.8
+          # minor : 1.0.7 -> 1.1.0
+          #
+          # Major version changes are intentionally handled
+          # outside this automated workflow for now.
+          # -------------------------------------------------------
           if [ -z "$latest" ]; then
 
             # First version of the application
@@ -204,10 +215,6 @@ jobs:
                 new_version="${major}.$((minor + 1)).0"
                 ;;
 
-              major)
-                new_version="$((major + 1)).0.0"
-                ;;
-
               *)
                 echo "ERROR: Invalid version bump type: $VERSION_BUMP"
                 exit 1
@@ -217,10 +224,15 @@ jobs:
 
           fi
 
+
           echo ""
+          echo "=========================================="
+          echo "VERSION INFORMATION"
+          echo "=========================================="
           echo "Latest Exchange Version : ${latest:-none}"
           echo "Version Bump            : $VERSION_BUMP"
           echo "New Exchange Version    : $new_version"
+          echo "=========================================="
 
           echo "ASSET_VERSION=$new_version" >> "$GITHUB_ENV"
 
