@@ -21,14 +21,13 @@ on:
           - prod
 
       asset_version:
-        description: 'Published Exchange version to deploy (example: 1.0.8)'
+        description: 'Published Exchange version to deploy (example: 1.0.7)'
         required: true
         type: string
 
 
 # =========================================================
-# Prevent two CLI deployments from running against
-# the same environment at the same time
+# Prevent simultaneous CLI deployments to same environment
 # =========================================================
 concurrency:
   group: mulesoft-cli-deploy-${{ inputs.environment }}
@@ -41,13 +40,20 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # Enables GitHub Environment protection/approval rules
+    # GitHub Environment
     environment: ${{ inputs.environment }}
 
     env:
 
+      # Target Anypoint environment
       ENV_NAME: ${{ inputs.environment }}
 
+      # Runtime configuration confirmed in Runtime Manager
+      RUNTIME_VERSION: "4.12.3:4e"
+      RELEASE_CHANNEL: "EDGE"
+      JAVA_VERSION: "17"
+
+      # Connected App credentials
       CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
       CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
 
@@ -56,8 +62,6 @@ jobs:
 
       # =========================================================
       # 1. SETUP NODE.JS
-      #
-      # Anypoint CLI v4 is installed through npm
       # =========================================================
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -93,12 +97,11 @@ jobs:
 
           echo ""
           echo "Installed CLI version:"
-
           anypoint-cli-v4 --version
 
 
       # =========================================================
-      # 4. VALIDATE DEPLOYMENT INPUT
+      # 4. VALIDATE DEPLOYMENT VERSION
       # =========================================================
       - name: Validate deployment input
         shell: bash
@@ -115,7 +118,7 @@ jobs:
 
             echo ""
             echo "ERROR: Invalid asset version: $VERSION"
-            echo "Expected format similar to: 1.0.8"
+            echo "Expected format similar to: 1.0.7"
 
             exit 1
 
@@ -137,15 +140,11 @@ jobs:
           APP_NAME="${{ vars.APPLICATION_NAME }}"
 
           if [ -z "$APP_NAME" ]; then
-
             echo "ERROR: GitHub variable APPLICATION_NAME is empty."
-
             exit 1
-
           fi
 
           echo "APP_NAME=$APP_NAME" >> "$GITHUB_ENV"
-
           echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
 
           echo ""
@@ -156,17 +155,16 @@ jobs:
           echo "Environment       : $ENV_NAME"
           echo "Exchange Version  : ${{ inputs.asset_version }}"
           echo "Deployment Target : ${{ vars.DEPLOYMENT_TARGET }}"
-          echo "Runtime           : ${{ vars.RUNTIME }}"
+          echo "Runtime           : $RUNTIME_VERSION"
+          echo "Release Channel   : $RELEASE_CHANNEL"
+          echo "Java Version      : $JAVA_VERSION"
           echo "Replicas          : ${{ vars.WORKERS }}"
           echo "Replica Size      : ${{ vars.WORKERSIZE }}"
           echo "=========================================="
 
 
       # =========================================================
-      # 6. VERIFY EXCHANGE ASSET VERSION
-      #
-      # Make sure the requested Exchange version actually exists
-      # before attempting deployment.
+      # 6. VERIFY REQUESTED EXCHANGE VERSION EXISTS
       # =========================================================
       - name: Verify Exchange asset version
         shell: bash
@@ -218,9 +216,7 @@ jobs:
 
 
       # =========================================================
-      # 7. CHECK IF APPLICATION ALREADY EXISTS
-      #
-      # If it exists, capture its CloudHub application ID.
+      # 7. CHECK WHETHER APPLICATION ALREADY EXISTS
       # =========================================================
       - name: Check if application exists in CloudHub
         id: check
@@ -281,7 +277,7 @@ jobs:
       # =========================================================
       # 8. DEPLOY NEW APPLICATION
       #
-      # Runs ONLY when the application does not already exist.
+      # Runs ONLY when application does not already exist
       # =========================================================
       - name: Deploy new application using Anypoint CLI
         if: steps.check.outputs.exists == 'false'
@@ -293,18 +289,20 @@ jobs:
           echo "Deploying NEW CloudHub application"
           echo "=========================================="
 
-          echo "Application : $APP_NAME"
-          echo "Version     : ${{ inputs.asset_version }}"
-          echo "Environment : $ENV_NAME"
-          echo "Target      : ${{ vars.DEPLOYMENT_TARGET }}"
-          echo "Runtime     : ${{ vars.RUNTIME }}"
-          echo "Replicas    : ${{ vars.WORKERS }}"
-          echo "ReplicaSize : ${{ vars.WORKERSIZE }}"
+          echo "Application     : $APP_NAME"
+          echo "Version         : ${{ inputs.asset_version }}"
+          echo "Environment     : $ENV_NAME"
+          echo "Target          : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime         : $RUNTIME_VERSION"
+          echo "Release Channel : $RELEASE_CHANNEL"
+          echo "Java Version    : $JAVA_VERSION"
+          echo "Replicas        : ${{ vars.WORKERS }}"
+          echo "Replica Size    : ${{ vars.WORKERSIZE }}"
 
           anypoint-cli-v4 runtime-mgr:application:deploy \
             "$APP_NAME" \
             "${{ vars.DEPLOYMENT_TARGET }}" \
-            "${{ vars.RUNTIME }}" \
+            "$RUNTIME_VERSION" \
             "$APP_NAME" \
             --organization="${{ secrets.ANYPOINT_ORG }}" \
             --client_id="$CONNECTED_APP_CLIENT_ID" \
@@ -312,6 +310,8 @@ jobs:
             --environment="$ENV_NAME" \
             --groupId="${{ secrets.ANYPOINT_ORG }}" \
             --assetVersion="${{ inputs.asset_version }}" \
+            --releaseChannel="$RELEASE_CHANNEL" \
+            --javaVersion="$JAVA_VERSION" \
             --replicas="${{ vars.WORKERS }}" \
             --replicaSize="${{ vars.WORKERSIZE }}" \
             --property="mule.env:dev"
@@ -323,13 +323,7 @@ jobs:
       # =========================================================
       # 9. UPDATE EXISTING APPLICATION
       #
-      # Runs ONLY when the application already exists.
-      #
-      # Uses the actual CloudHub application ID returned by:
-      #
-      # runtime-mgr:application:list
-      #
-      # and deploys the requested Exchange version.
+      # Runs ONLY when application already exists
       # =========================================================
       - name: Update existing application using Anypoint CLI
         if: steps.check.outputs.exists == 'true'
@@ -340,24 +334,23 @@ jobs:
           APP_ID="${{ steps.check.outputs.application_id }}"
 
           if [ -z "$APP_ID" ]; then
-
             echo "ERROR: Existing application ID was not returned."
-
             exit 1
-
           fi
 
           echo "=========================================="
           echo "Updating EXISTING CloudHub application"
           echo "=========================================="
 
-          echo "Application    : $APP_NAME"
-          echo "Application ID : $APP_ID"
-          echo "Version        : ${{ inputs.asset_version }}"
-          echo "Environment    : $ENV_NAME"
-          echo "Runtime        : ${{ vars.RUNTIME }}"
-          echo "Replicas       : ${{ vars.WORKERS }}"
-          echo "Replica Size   : ${{ vars.WORKERSIZE }}"
+          echo "Application     : $APP_NAME"
+          echo "Application ID  : $APP_ID"
+          echo "Version         : ${{ inputs.asset_version }}"
+          echo "Environment     : $ENV_NAME"
+          echo "Runtime         : $RUNTIME_VERSION"
+          echo "Release Channel : $RELEASE_CHANNEL"
+          echo "Java Version    : $JAVA_VERSION"
+          echo "Replicas        : ${{ vars.WORKERS }}"
+          echo "Replica Size    : ${{ vars.WORKERSIZE }}"
 
           anypoint-cli-v4 runtime-mgr:application:modify \
             "$APP_ID" \
@@ -368,7 +361,9 @@ jobs:
             --groupId="${{ secrets.ANYPOINT_ORG }}" \
             --artifactId="$APP_NAME" \
             --assetVersion="${{ inputs.asset_version }}" \
-            --runtimeVersion="${{ vars.RUNTIME }}" \
+            --runtimeVersion="$RUNTIME_VERSION" \
+            --releaseChannel="$RELEASE_CHANNEL" \
+            --javaVersion="$JAVA_VERSION" \
             --replicas="${{ vars.WORKERS }}" \
             --replicaSize="${{ vars.WORKERSIZE }}" \
             --property="mule.env:dev"
@@ -379,11 +374,6 @@ jobs:
 
       # =========================================================
       # 10. VERIFY APPLICATION EXISTS AFTER DEPLOYMENT/UPDATE
-      #
-      # Runs after either:
-      #
-      # NEW    -> application:deploy
-      # EXISTING -> application:modify
       # =========================================================
       - name: Verify CloudHub deployment
         shell: bash
@@ -436,11 +426,14 @@ jobs:
           echo "=========================================="
           echo "CLI DEPLOYMENT SUCCESSFUL"
           echo "=========================================="
-          echo "Application : $APP_NAME"
-          echo "Version     : ${{ inputs.asset_version }}"
-          echo "Environment : $ENV_NAME"
-          echo "Target      : ${{ vars.DEPLOYMENT_TARGET }}"
-          echo "Method      : Anypoint CLI v4"
+          echo "Application     : $APP_NAME"
+          echo "Version         : ${{ inputs.asset_version }}"
+          echo "Environment     : $ENV_NAME"
+          echo "Target          : ${{ vars.DEPLOYMENT_TARGET }}"
+          echo "Runtime         : $RUNTIME_VERSION"
+          echo "Release Channel : $RELEASE_CHANNEL"
+          echo "Java Version    : $JAVA_VERSION"
+          echo "Method          : Anypoint CLI v4"
           echo "=========================================="
 
           echo "### MuleSoft CLI - Deployment" \
@@ -465,6 +458,15 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Target | ${{ vars.DEPLOYMENT_TARGET }} |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Runtime | $RUNTIME_VERSION |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Release Channel | $RELEASE_CHANNEL |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Java Version | $JAVA_VERSION |" \
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Deployment Method | Anypoint CLI v4 |" \
