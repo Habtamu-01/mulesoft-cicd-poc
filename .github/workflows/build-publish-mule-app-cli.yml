@@ -1,0 +1,372 @@
+name: MuleSoft CLI - Build & Publish
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Git commit SHA to build and publish'
+        required: true
+        type: string
+
+concurrency:
+  group: mulesoft-cli-build-publish
+  cancel-in-progress: false
+
+jobs:
+  build-publish-cli:
+    runs-on: ubuntu-latest
+
+    env:
+      CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
+      CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+
+      # Required by some Maven/Exchange components with Java 17
+      MAVEN_OPTS: "--add-opens java.base/sun.net.www.protocol.https=ALL-UNNAMED"
+
+    steps:
+
+      # =========================================================
+      # 1. CHECKOUT EXACT COMMIT
+      # =========================================================
+      - name: Checkout selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+
+      # =========================================================
+      # 2. VERIFY COMMIT
+      # =========================================================
+      - name: Verify selected commit
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          REQUESTED_COMMIT="${{ inputs.commit_sha }}"
+          ACTUAL_COMMIT="$(git rev-parse HEAD)"
+
+          echo "Requested Commit : $REQUESTED_COMMIT"
+          echo "Actual Commit    : $ACTUAL_COMMIT"
+
+          RESOLVED_COMMIT="$(git rev-parse "${REQUESTED_COMMIT}^{commit}")"
+
+          if [ "$RESOLVED_COMMIT" != "$ACTUAL_COMMIT" ]; then
+            echo "ERROR: Checked-out commit does not match requested commit."
+            exit 1
+          fi
+
+          echo "Commit verified successfully."
+
+
+      # =========================================================
+      # 3. SETUP JAVA
+      # =========================================================
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: '17'
+          cache: maven
+
+
+      # =========================================================
+      # 4. SETUP NODE.JS
+      # Anypoint CLI v4 is installed through npm
+      # =========================================================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+
+      # =========================================================
+      # 5. INSTALL REQUIRED TOOLS
+      # =========================================================
+      - name: Install required tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+
+      # =========================================================
+      # 6. INSTALL ANYPOINT CLI V4
+      # =========================================================
+      - name: Install Anypoint CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Installing Anypoint CLI v4..."
+
+          npm install -g anypoint-cli-v4
+
+          echo ""
+          echo "Installed Anypoint CLI version:"
+          anypoint-cli-v4 --version
+
+
+      # =========================================================
+      # 7. READ APPLICATION ID FROM POM
+      # =========================================================
+      - name: Read application information
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP_ID=$(mvn help:evaluate \
+            -Dexpression=project.artifactId \
+            -q \
+            -DforceStdout)
+
+          if [ -z "$APP_ID" ]; then
+            echo "ERROR: Unable to determine application artifactId."
+            exit 1
+          fi
+
+          echo "Application : $APP_ID"
+
+          echo "APP_ID=$APP_ID" >> "$GITHUB_ENV"
+
+
+      # =========================================================
+      # 8. RESOLVE NEXT EXCHANGE VERSION USING ANYPOINT CLI
+      # =========================================================
+      - name: Resolve next Exchange version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Checking Exchange versions"
+          echo "Application : $APP_ID"
+          echo "=========================================="
+
+          EXCHANGE_RESPONSE=$(anypoint-cli-v4 exchange:asset:list \
+            "$APP_ID" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --organizationId="${{ secrets.ANYPOINT_ORG }}" \
+            --output=json)
+
+          latest=$(echo "$EXCHANGE_RESPONSE" | \
+            jq -r --arg id "$APP_ID" \
+            '.[] | select(.assetId == $id) | .version // empty' | \
+            grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | \
+            sort -t. -k1,1n -k2,2n -k3,3n | \
+            tail -1 || true)
+
+          if [ -z "$latest" ]; then
+            new_version="1.0.0"
+          else
+            IFS='.' read -r major minor patch <<< "$latest"
+            new_version="${major}.${minor}.$((patch + 1))"
+          fi
+
+          echo ""
+          echo "Latest Exchange Version : ${latest:-none}"
+          echo "New Exchange Version    : $new_version"
+
+          echo "ASSET_VERSION=$new_version" >> "$GITHUB_ENV"
+
+
+      # =========================================================
+      # 9. BUILD MULE APPLICATION
+      #
+      # attachMuleSources makes the deployable JAR importable
+      # back into Anypoint Studio.
+      # =========================================================
+      - name: Build Mule application with project sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Building Mule application"
+          echo "Application : $APP_ID"
+          echo "Version     : $ASSET_VERSION"
+          echo "=========================================="
+
+          mvn clean package \
+            -DskipTests \
+            -Denv=dev \
+            -DattachMuleSources
+
+
+      # =========================================================
+      # 10. LOCATE GENERATED MULE JAR
+      # =========================================================
+      - name: Locate Mule application JAR
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          JAR_FILE=$(find target \
+            -maxdepth 1 \
+            -type f \
+            -name "*-mule-application.jar" \
+            | head -n 1)
+
+          if [ -z "$JAR_FILE" ]; then
+            echo "ERROR: Mule application JAR was not generated."
+
+            echo ""
+            echo "Files generated under target:"
+            find target -maxdepth 1 -type f -print
+
+            exit 1
+          fi
+
+          echo "Generated JAR: $JAR_FILE"
+
+          echo "JAR_FILE=$JAR_FILE" >> "$GITHUB_ENV"
+
+
+      # =========================================================
+      # 11. VERIFY MULE SOURCES ARE ATTACHED
+      # =========================================================
+      - name: Verify Mule sources are attached
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking JAR:"
+          echo "$JAR_FILE"
+
+          echo ""
+          echo "Looking for META-INF/mule-src..."
+          echo ""
+
+          if jar tf "$JAR_FILE" | grep -q '^META-INF/mule-src/'; then
+            echo "SUCCESS: Mule project sources are attached."
+          else
+            echo "ERROR: META-INF/mule-src was not found."
+            echo "The application will NOT be published."
+            exit 1
+          fi
+
+
+      # =========================================================
+      # 12. STAGE MULE APPLICATION JAR
+      # =========================================================
+      - name: Stage Mule artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf application
+          mkdir -p application
+
+          APPLICATION_JAR=$(basename "$JAR_FILE")
+
+          cp "$JAR_FILE" "application/$APPLICATION_JAR"
+
+          echo "APPLICATION_JAR=$APPLICATION_JAR" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "Staged artifact:"
+          echo "application/$APPLICATION_JAR"
+
+
+      # =========================================================
+      # 13. PUBLISH TO ANYPOINT EXCHANGE USING CLI
+      # =========================================================
+      - name: Publish to Anypoint Exchange using CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Publishing application using Anypoint CLI"
+          echo "=========================================="
+
+          echo "Application : $APP_ID"
+          echo "Version     : $ASSET_VERSION"
+          echo "Artifact    : $APPLICATION_JAR"
+
+          anypoint-cli-v4 exchange:asset:upload \
+            "${{ secrets.ANYPOINT_ORG }}/$APP_ID/$ASSET_VERSION" \
+            --name="$APP_ID" \
+            --type="app" \
+            --status="published" \
+            --files="{\"mule-application.jar\":\"application/$APPLICATION_JAR\"}" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET"
+
+
+      # =========================================================
+      # 14. VERIFY EXCHANGE PUBLICATION
+      # =========================================================
+      - name: Verify published Exchange asset
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=========================================="
+          echo "Verifying Exchange publication"
+          echo "=========================================="
+
+          anypoint-cli-v4 exchange:asset:describe \
+            "${{ secrets.ANYPOINT_ORG }}/$APP_ID/$ASSET_VERSION" \
+            --client_id="$CONNECTED_APP_CLIENT_ID" \
+            --client_secret="$CONNECTED_APP_CLIENT_SECRET" \
+            --output=json
+
+          echo ""
+          echo "Exchange asset verified successfully."
+
+
+      # =========================================================
+      # 15. BUILD AND PUBLISH SUMMARY
+      # =========================================================
+      - name: Build and Publish Summary
+        shell: bash
+        run: |
+          echo "=========================================="
+          echo "CLI BUILD AND PUBLISH SUCCESSFUL"
+          echo "=========================================="
+          echo "Application : $APP_ID"
+          echo "Version     : $ASSET_VERSION"
+          echo "Commit      : $(git rev-parse HEAD)"
+          echo "CLI         : Anypoint CLI v4"
+          echo "Sources     : Attached"
+          echo "=========================================="
+
+          echo "### MuleSoft CLI - Build & Publish" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Property | Value |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "|---|---|" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Application | $APP_ID |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Exchange Version | $ASSET_VERSION |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Commit | $(git rev-parse HEAD) |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Publish Method | Anypoint CLI v4 |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Mule Sources Attached | Yes |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "**CLI Deploy Version:** \`$ASSET_VERSION\`" \
+            >> "$GITHUB_STEP_SUMMARY"
