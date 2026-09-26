@@ -48,10 +48,10 @@ jobs:
       # Target Anypoint environment
       ENV_NAME: ${{ inputs.environment }}
 
-      # Runtime configuration confirmed in Runtime Manager
-      RUNTIME_VERSION: "4.12.3:4e"
-      RELEASE_CHANNEL: "EDGE"
-      JAVA_VERSION: "17"
+      # Runtime configuration from GitHub Repository Variables
+      RUNTIME_VERSION: ${{ vars.RUNTIME }}
+      RELEASE_CHANNEL: ${{ vars.RELEASE_CHANNEL }}
+      JAVA_VERSION: ${{ vars.JAVA_VERSION }}
 
       # Connected App credentials
       CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
@@ -141,6 +141,21 @@ jobs:
 
           if [ -z "$APP_NAME" ]; then
             echo "ERROR: GitHub variable APPLICATION_NAME is empty."
+            exit 1
+          fi
+
+          if [ -z "$RUNTIME_VERSION" ]; then
+            echo "ERROR: GitHub variable RUNTIME is empty."
+            exit 1
+          fi
+
+          if [ -z "$RELEASE_CHANNEL" ]; then
+            echo "ERROR: GitHub variable RELEASE_CHANNEL is empty."
+            exit 1
+          fi
+
+          if [ -z "$JAVA_VERSION" ]; then
+            echo "ERROR: GitHub variable JAVA_VERSION is empty."
             exit 1
           fi
 
@@ -277,7 +292,7 @@ jobs:
       # =========================================================
       # 8. DEPLOY NEW APPLICATION
       #
-      # Runs ONLY when application does not already exist
+      # Runs only when application does NOT already exist
       # =========================================================
       - name: Deploy new application using Anypoint CLI
         if: steps.check.outputs.exists == 'false'
@@ -323,7 +338,7 @@ jobs:
       # =========================================================
       # 9. UPDATE EXISTING APPLICATION
       #
-      # Runs ONLY when application already exists
+      # Runs only when application ALREADY exists
       # =========================================================
       - name: Update existing application using Anypoint CLI
         if: steps.check.outputs.exists == 'true'
@@ -467,6 +482,12 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Java Version | $JAVA_VERSION |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Replicas | ${{ vars.WORKERS }} |" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+          echo "| Replica Size | ${{ vars.WORKERSIZE }} |" \
             >> "$GITHUB_STEP_SUMMARY"
 
           echo "| Deployment Method | Anypoint CLI v4 |" \
