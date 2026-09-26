@@ -11,17 +11,31 @@ on:
         required: true
         type: string
 
+      version_bump:
+        description: 'Version increment type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+
 concurrency:
   group: mulesoft-build-publish
   cancel-in-progress: false
 
+
 jobs:
+
   build-publish:
     runs-on: ubuntu-latest
 
     env:
       CONNECTED_APP_CLIENT_ID: ${{ secrets.ANYPOINT_CLIENT_ID }}
       CONNECTED_APP_CLIENT_SECRET: ${{ secrets.ANYPOINT_CLIENT_SECRET }}
+
 
     steps:
 
@@ -84,6 +98,11 @@ jobs:
 
       # =========================================================
       # 5. GENERATE VERSIONED POM
+      #
+      # Supports:
+      #   patch : 1.0.7 -> 1.0.8
+      #   minor : 1.0.7 -> 1.1.0
+      #   major : 1.0.7 -> 2.0.0
       # =========================================================
       - name: Generate versioned POM
         shell: bash
@@ -100,8 +119,12 @@ jobs:
             --xpath "//*[local-name()='project']/*[local-name()='artifactId']/text()" \
             pom.xml)
 
+          VERSION_BUMP="${{ inputs.version_bump }}"
+
           echo "Current Version : $CURRENT_VERSION"
           echo "Asset ID        : $ASSET_ID"
+          echo "Version Bump    : $VERSION_BUMP"
+
 
           # -------------------------------------------------------
           # Generate Anypoint OAuth token
@@ -135,12 +158,15 @@ jobs:
 
 
           # -------------------------------------------------------
-          # Generate next patch version
-          # Example:
-          # 1.0.4 -> 1.0.5
+          # Generate next Exchange version
+          #
+          # patch : 1.0.7 -> 1.0.8
+          # minor : 1.0.7 -> 1.1.0
+          # major : 1.0.7 -> 2.0.0
           # -------------------------------------------------------
           if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" = "null" ]; then
 
+            # Preserve the existing first-version behavior
             NEW_VERSION="1.0.1"
 
           else
@@ -155,13 +181,42 @@ jobs:
             if [ -z "$MINOR" ]; then MINOR=0; fi
             if [ -z "$PATCH" ]; then PATCH=0; fi
 
-            NEXT_PATCH=$((PATCH + 1))
 
-            NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+            case "$VERSION_BUMP" in
+
+              patch)
+                NEXT_PATCH=$((PATCH + 1))
+                NEW_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+                ;;
+
+              minor)
+                NEXT_MINOR=$((MINOR + 1))
+                NEW_VERSION="${MAJOR}.${NEXT_MINOR}.0"
+                ;;
+
+              major)
+                NEXT_MAJOR=$((MAJOR + 1))
+                NEW_VERSION="${NEXT_MAJOR}.0.0"
+                ;;
+
+              *)
+                echo "ERROR: Invalid version bump type: $VERSION_BUMP"
+                exit 1
+                ;;
+
+            esac
 
           fi
 
-          echo "New Exchange Version: $NEW_VERSION"
+
+          echo ""
+          echo "=========================================="
+          echo "VERSION INFORMATION"
+          echo "=========================================="
+          echo "Latest Exchange Version : ${LATEST_VERSION:-none}"
+          echo "Version Bump            : $VERSION_BUMP"
+          echo "New Exchange Version    : $NEW_VERSION"
+          echo "=========================================="
 
 
           # -------------------------------------------------------
@@ -285,9 +340,15 @@ jobs:
       - name: Build and Publish Summary
         shell: bash
         run: |
-          echo "Asset   : $ASSET_ID"
-          echo "Version : $ASSET_VERSION"
-          echo "Commit  : $(git rev-parse HEAD)"
+          echo "=========================================="
+          echo "BUILD AND PUBLISH SUCCESSFUL"
+          echo "=========================================="
+          echo "Asset        : $ASSET_ID"
+          echo "Version      : $ASSET_VERSION"
+          echo "Version Bump : ${{ inputs.version_bump }}"
+          echo "Commit       : $(git rev-parse HEAD)"
+          echo "Sources      : Attached"
+          echo "=========================================="
 
           echo "### MuleSoft Build & Publish" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -297,6 +358,7 @@ jobs:
 
           echo "| Asset | $ASSET_ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Exchange Version | $ASSET_VERSION |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version Increment | ${{ inputs.version_bump }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Commit | $(git rev-parse HEAD) |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Mule Sources Attached | Yes |" >> "$GITHUB_STEP_SUMMARY"
 
